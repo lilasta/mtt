@@ -1,4 +1,4 @@
-use std::collections::LinkedList;
+use std::collections::HashMap;
 
 use crate::tokenize::Token;
 
@@ -28,35 +28,31 @@ pub type Constructor = String;
 pub type Index = usize;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Choices(LinkedList<(Constructor, Expression)>);
+pub struct Choices(HashMap<Constructor, Expression>);
 
 impl Choices {
-    const fn empty() -> Self {
-        Self(LinkedList::new())
+    fn empty() -> Self {
+        Self(HashMap::new())
     }
 
-    fn push_front(self, con: Constructor, expr: Expression) -> Self {
-        let Self(mut list) = self;
-        list.push_front((con, expr));
-        Self(list)
+    fn insert(self, con: Constructor, expr: Expression) -> Self {
+        let Self(mut entries) = self;
+        entries.insert(con, expr);
+        Self(entries)
     }
 
     pub fn get<'a>(&'a self, choice: &str) -> &'a Expression {
-        self.0
-            .iter()
-            .find(|entry| entry.0 == choice)
-            .map(|entry| &entry.1)
-            .unwrap()
+        let Self(entries) = self;
+        entries.get(choice).unwrap()
     }
 
     pub fn is_same_struct(&self, other: &Self) -> bool {
-        self.0
-            .iter()
-            .zip(other.0.iter())
-            .all(|((c1, _), (c2, _))| c1 == c2)
+        let Self(entries1) = self;
+        let Self(entries2) = other;
+        entries1.len() == entries2.len() && entries1.keys().all(|key| entries2.contains_key(key))
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &(Constructor, Expression)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&Constructor, &Expression)> {
         self.0.iter()
     }
 }
@@ -69,7 +65,7 @@ pub enum Declaration {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
-    Unit,
+    Wildcard,
     Var(String),
     Pair(Box<Self>, Box<Self>),
 }
@@ -77,9 +73,9 @@ pub enum Pattern {
 impl Pattern {
     pub fn contains(&self, name: &str) -> bool {
         match self {
-            Pattern::Unit => false,
-            Pattern::Var(var) => var == name,
-            Pattern::Pair(a, b) => a.contains(name) || b.contains(name),
+            Self::Wildcard => false,
+            Self::Var(var) => var == name,
+            Self::Pair(a, b) => a.contains(name) || b.contains(name),
         }
     }
 }
@@ -94,7 +90,7 @@ fn consume(tokens: &[Token], token: Token) -> Option<&[Token]> {
 fn parse_pattern_single(tokens: &[Token]) -> Option<(Pattern, &[Token])> {
     match tokens {
         [Token::Ident(ident), rest @ ..] => Some((Pattern::Var(ident.clone()), rest)),
-        [Token::Underscore, rest @ ..] => Some((Pattern::Unit, rest)),
+        [Token::Underscore, rest @ ..] => Some((Pattern::Wildcard, rest)),
         _ => None,
     }
 }
@@ -135,7 +131,7 @@ fn parse_data(tokens: &[Token]) -> Option<(Choices, &[Token])> {
             let (choices, rest) = consume(rest, Token::VerticalBar)
                 .and_then(parse_data)
                 .unwrap_or((Choices::empty(), rest));
-            Some((choices.push_front(con.clone(), expr), rest))
+            Some((choices.insert(con.clone(), expr), rest))
         }
         _ => None,
     }
@@ -144,14 +140,14 @@ fn parse_data(tokens: &[Token]) -> Option<(Choices, &[Token])> {
 fn parse_cases(tokens: &[Token]) -> Option<(Choices, &[Token])> {
     match tokens {
         [Token::Ident(con), rest @ ..] => {
-            let (pat, rest) = parse_pattern(rest).unwrap_or((Pattern::Unit, rest));
+            let (pat, rest) = parse_pattern(rest).unwrap_or((Pattern::Wildcard, rest));
             let rest = consume(rest, Token::CaseArrow)?;
             let (expr, rest) = parse_expression(rest)?;
             let (choices, rest) = consume(rest, Token::VerticalBar)
                 .and_then(parse_cases)
                 .unwrap_or((Choices::empty(), rest));
             Some((
-                choices.push_front(con.clone(), Expression::Lambda(pat, Box::new(expr))),
+                choices.insert(con.clone(), Expression::Lambda(pat, Box::new(expr))),
                 rest,
             ))
         }
@@ -241,7 +237,7 @@ fn parse_cross(tokens: &[Token]) -> Option<(Expression, &[Token])> {
     let (expr1, rest) = parse_application(tokens)?;
     match consume(rest, Token::Cross).and_then(parse_expression) {
         Some((expr2, rest)) => Some((
-            Expression::Sigma(Pattern::Unit, Box::new(expr1), Box::new(expr2)),
+            Expression::Sigma(Pattern::Wildcard, Box::new(expr1), Box::new(expr2)),
             rest,
         )),
         None => Some((expr1, rest)),
@@ -260,7 +256,7 @@ fn parse_arrow(tokens: &[Token]) -> Option<(Expression, &[Token])> {
     let (expr1, rest) = parse_pair(tokens)?;
     match consume(rest, Token::Arrow).and_then(parse_expression) {
         Some((expr2, rest)) => Some((
-            Expression::Pi(Pattern::Unit, Box::new(expr1), Box::new(expr2)),
+            Expression::Pi(Pattern::Wildcard, Box::new(expr1), Box::new(expr2)),
             rest,
         )),
         None => Some((expr1, rest)),

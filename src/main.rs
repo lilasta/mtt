@@ -306,7 +306,7 @@ impl TypeContext {
 
     fn push(&self, pat: Pattern, ty: Value, value: Value) -> Option<Self> {
         match (pat, ty) {
-            (Pattern::Unit, _) => Some(self.clone()),
+            (Pattern::Wildcard, _) => Some(self.clone()),
             (Pattern::Var(var), ty) => {
                 let Self(mut entries) = self.clone();
                 entries.insert(var, ty);
@@ -529,7 +529,7 @@ fn main() {
 
         let true_ty: U = Sum (TrueTy);
         let false_ty: U = Sum (FalseTy);
-        let bool2ty: bool -> U = fun (True => true_ty | False => false_ty);
+        let bool2ty: bool -> U = fun (False => false_ty | True => true_ty);
         let bool2ty_v: Π b: bool. bool2ty b = fun (True => TrueTy | False => FalseTy);
 
         let function_ty: bool → U = fun (True => bool | False => 1);
