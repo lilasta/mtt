@@ -383,10 +383,10 @@ impl TypeCheck {
     fn check_declaration(&self, decl: &Declaration) -> Result<TypeContext, TypeCheckError> {
         match decl {
             Declaration::Define(p, a, e) => {
-                self.is_type(a)?;
+                self.check_type(a)?;
 
                 let t = self.environment.evaluate(a);
-                self.is(e, &t)?;
+                self.check(e, &t)?;
 
                 let m = self.environment.evaluate(e);
                 self.type_context
@@ -394,11 +394,11 @@ impl TypeCheck {
                     .ok_or(TypeCheckError::InvalidDefinition)
             }
             Declaration::DefineRec(p, a, e) => {
-                self.is_type(a)?;
+                self.check_type(a)?;
 
                 let t = self.environment.evaluate(a);
                 self.push_variable(p.clone(), t.clone(), self.dummy())?
-                    .is(e, &t)?;
+                    .check(e, &t)?;
 
                 let v = self.environment.push_declaration(decl.clone()).evaluate(e);
                 self.type_context
@@ -419,7 +419,7 @@ impl TypeCheck {
                     return Err(TypeCheckError::NotFunction);
                 };
 
-                self.is(n, &t)?;
+                self.check(n, &t)?;
 
                 Ok(g.instantiate(&self.environment.evaluate(n)))
             }
@@ -439,36 +439,36 @@ impl TypeCheck {
         }
     }
 
-    fn is_type(&self, expr: &Expression) -> Result<(), TypeCheckError> {
+    fn check_type(&self, expr: &Expression) -> Result<(), TypeCheckError> {
         match expr {
             Expression::Universe => Ok(()),
             Expression::UnitType => Ok(()),
             Expression::Pi(pat, box a, box b) | Expression::Sigma(pat, box a, box b) => {
-                self.is_type(a)?;
+                self.check_type(a)?;
                 self.push_variable(pat.clone(), self.environment.evaluate(a), self.dummy())?
-                    .is_type(b)
+                    .check_type(b)
             }
-            other => self.is(other, &Value::Universe),
+            other => self.check(other, &Value::Universe),
         }
     }
 
-    fn is(&self, expr: &Expression, ty: &Value) -> Result<(), TypeCheckError> {
+    fn check(&self, expr: &Expression, ty: &Value) -> Result<(), TypeCheckError> {
         match (expr, ty) {
             (Expression::Lambda(p, box e), Value::Pi(box t, box g)) => {
                 let gen = self.dummy();
                 self.push_variable(p.clone(), t.clone(), gen.clone())?
-                    .is(e, &g.instantiate(&gen))
+                    .check(e, &g.instantiate(&gen))
             }
             (Expression::Pair(box m, box n), Value::Sigma(box t, box g)) => {
-                self.is(m, t)?;
-                self.is(n, &g.instantiate(&self.environment.evaluate(m)))
+                self.check(m, t)?;
+                self.check(n, &g.instantiate(&self.environment.evaluate(m)))
             }
             (
                 Expression::Construct(con, box m),
                 Value::Sum(_, box ChoiceClosure(choices, env2)),
             ) => {
                 let a = choices.get(con);
-                self.is(m, &env2.evaluate(a))
+                self.check(m, &env2.evaluate(a))
             }
             (
                 Expression::Fun(_, choices),
@@ -476,7 +476,7 @@ impl TypeCheck {
             ) => {
                 if choices.is_same_struct(choices2) {
                     for ((c, e), (_, a)) in choices.iter().zip(choices2.iter()) {
-                        self.is(
+                        self.check(
                             e,
                             &Value::Pi(
                                 Box::new(env2.evaluate(a)),
@@ -490,19 +490,19 @@ impl TypeCheck {
                 }
             }
             (Expression::Declaration(box decl, box e), ty) => {
-                self.push_declaration(decl)?.is(e, ty)
+                self.push_declaration(decl)?.check(e, ty)
             }
             (Expression::UnitElement, Value::UnitType) => Ok(()),
             (Expression::UnitType, Value::Universe) => Ok(()),
             (Expression::Pi(p, box a, box b), Value::Universe)
             | (Expression::Sigma(p, box a, box b), Value::Universe) => {
-                self.is(a, &Value::Universe)?;
+                self.check(a, &Value::Universe)?;
                 self.push_variable(p.clone(), self.environment.evaluate(a), self.dummy())?
-                    .is(b, &Value::Universe)
+                    .check(b, &Value::Universe)
             }
             (Expression::Sum(_, choices), Value::Universe) => {
                 for (_, a) in choices.iter() {
-                    self.is(a, &Value::Universe)?;
+                    self.check(a, &Value::Universe)?;
                 }
                 Ok(())
             }
@@ -563,11 +563,11 @@ fn main() {
     let tokens = tokenize(test);
     let tokens = tokens.into_iter().collect::<Vec<_>>();
     let parsed = parse(&tokens);
-    println!("{:?}", parsed);
+    //println!("{:?}", parsed);
 
     let (parsed, rest) = parsed.unwrap();
     assert!(rest.is_empty());
 
-    TypeCheck::new().is(&parsed, &Value::UnitType).unwrap();
-    println!("typed.");
+    TypeCheck::new().check(&parsed, &Value::UnitType).unwrap();
+    println!("Typed.");
 }
