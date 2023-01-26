@@ -3,17 +3,36 @@
 mod parse;
 mod tokenize;
 
-use std::collections::LinkedList;
+use std::collections::{HashMap, LinkedList};
+use std::fmt::Debug;
 
 use crate::parse::*;
 use crate::tokenize::*;
 
-fn projection(pat: &Pattern, name: &str, value: Value) -> Value {
+enum ProjectionError<'a> {
+    NameNotFound(&'a str),
+}
+
+impl<'a> Debug for ProjectionError<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NameNotFound(name) => {
+                write!(f, "[projection] `{}` is not found in the pattern.", name)
+            }
+        }
+    }
+}
+
+fn projection<'a>(
+    pat: &Pattern,
+    name: &'a str,
+    value: Value,
+) -> Result<Value, ProjectionError<'a>> {
     match pat {
-        Pattern::Var(var) if var == name => value,
+        Pattern::Var(var) if var == name => Ok(value),
         Pattern::Pair(a, _) if a.contains(name) => projection(a, name, value.first()),
         Pattern::Pair(_, b) if b.contains(name) => projection(b, name, value.second()),
-        _ => panic!("[Pattern::projection] {:?} {:?} {:?}", name, value, pat),
+        _ => Err(ProjectionError::NameNotFound(name)),
     }
 }
 
@@ -171,28 +190,28 @@ impl Environment {
 
     fn get(&self, name: &str) -> Value {
         match self {
+            Self::Empty => panic!("[Environment::get] {} is not found", name),
             Self::Variable(rest, pat, v) => {
                 if pat.contains(name) {
-                    projection(pat, name, v.clone())
+                    projection(pat, name, v.clone()).unwrap()
                 } else {
                     rest.get(name)
                 }
             }
-            Self::Declaration(box env, Declaration::Define(pat, _, e)) => {
+            Self::Declaration(env, Declaration::Define(pat, _, e)) => {
                 if pat.contains(name) {
-                    projection(pat, name, env.evaluate(e))
+                    projection(pat, name, env.evaluate(e)).unwrap()
                 } else {
                     env.get(name)
                 }
             }
-            Self::Declaration(box env, Declaration::DefineRec(pat, _, e)) => {
+            Self::Declaration(env, Declaration::DefineRec(pat, _, e)) => {
                 if pat.contains(name) {
-                    projection(pat, name, self.evaluate(e))
+                    projection(pat, name, self.evaluate(e)).unwrap()
                 } else {
                     env.get(name)
                 }
             }
-            _ => panic!("[Environment::get] {} is not found", name),
         }
     }
 
@@ -273,18 +292,16 @@ impl Environment {
 }
 
 #[derive(Debug, Clone)]
-struct TypeContext(Vec<(String, Value)>);
+struct TypeContext(HashMap<String, Value>);
 
 impl TypeContext {
     fn new() -> Self {
-        Self(Vec::new())
+        Self(HashMap::new())
     }
 
     fn get(&self, name: &str) -> Option<Value> {
-        self.0
-            .iter()
-            .find(|entry| entry.0 == name)
-            .map(|entry| entry.1.clone())
+        let Self(entries) = self;
+        entries.get(name).cloned()
     }
 
     fn push(&self, pat: Pattern, ty: Value, value: Value) -> Option<Self> {
@@ -292,13 +309,39 @@ impl TypeContext {
             (Pattern::Unit, _) => Some(self.clone()),
             (Pattern::Var(var), ty) => {
                 let Self(mut entries) = self.clone();
-                entries.push((var, ty));
+                entries.insert(var, ty);
                 Some(Self(entries))
             }
             (Pattern::Pair(box a, box b), Value::Sigma(box t, box g)) => self
                 .push(a, t, value.first())?
                 .push(b, g.instantiate(&value.first()), value.second()),
-            _ => panic!("[TypeContext::push] invalid"),
+            _ => None,
+        }
+    }
+}
+
+enum TypeCheckError {
+    CannotInfer,
+    NotFunction,
+    NotTuple,
+    InvalidDefinition,
+    VariableNotFound(String),
+    MismatchedType(Expression, Value),
+}
+
+impl Debug for TypeCheckError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CannotInfer => write!(f, "CannotInfer"),
+            Self::NotFunction => write!(f, "NotFunction"),
+            Self::NotTuple => write!(f, "NotTuple"),
+            Self::InvalidDefinition => write!(f, "InvalidDefinition"),
+            Self::VariableNotFound(arg0) => f.debug_tuple("VariableNotFound").field(arg0).finish(),
+            Self::MismatchedType(arg0, arg1) => f
+                .debug_tuple("UnexpectedType")
+                .field(arg0)
+                .field(arg1)
+                .finish(),
         }
     }
 }
@@ -320,23 +363,24 @@ impl TypeCheck {
         self.environment.free_variable()
     }
 
-    fn push_variable(&self, pat: Pattern, ty: Value, value: Value) -> Option<Self> {
-        Some(Self {
+    fn push_variable(&self, pat: Pattern, ty: Value, value: Value) -> Result<Self, TypeCheckError> {
+        Ok(Self {
             environment: self.environment.push_variable(pat.clone(), value.clone()),
             type_context: self
                 .type_context
-                .push(pat.clone(), ty.clone(), value.clone())?,
+                .push(pat.clone(), ty.clone(), value.clone())
+                .ok_or(TypeCheckError::InvalidDefinition)?,
         })
     }
 
-    fn push_declaration(&self, decl: &Declaration) -> Option<Self> {
+    fn push_declaration(&self, decl: &Declaration) -> Result<Self, TypeCheckError> {
         self.check_declaration(decl).map(|type_context| Self {
             environment: self.environment.push_declaration(decl.clone()),
             type_context,
         })
     }
 
-    fn check_declaration(&self, decl: &Declaration) -> Option<TypeContext> {
+    fn check_declaration(&self, decl: &Declaration) -> Result<TypeContext, TypeCheckError> {
         match decl {
             Declaration::Define(p, a, e) => {
                 self.is_type(a)?;
@@ -345,7 +389,9 @@ impl TypeCheck {
                 self.is(e, &t)?;
 
                 let m = self.environment.evaluate(e);
-                self.type_context.push(p.clone(), t, m)
+                self.type_context
+                    .push(p.clone(), t, m)
+                    .ok_or(TypeCheckError::InvalidDefinition)
             }
             Declaration::DefineRec(p, a, e) => {
                 self.is_type(a)?;
@@ -355,43 +401,48 @@ impl TypeCheck {
                     .is(e, &t)?;
 
                 let v = self.environment.push_declaration(decl.clone()).evaluate(e);
-                self.type_context.push(p.clone(), t, v)
+                self.type_context
+                    .push(p.clone(), t, v)
+                    .ok_or(TypeCheckError::InvalidDefinition)
             }
         }
     }
 
-    fn infer_type(&self, expr: &Expression) -> Option<Value> {
+    fn infer_type(&self, expr: &Expression) -> Result<Value, TypeCheckError> {
         match expr {
-            Expression::Variable(x) => self.type_context.get(&x),
+            Expression::Variable(x) => self
+                .type_context
+                .get(&x)
+                .ok_or(TypeCheckError::VariableNotFound(x.clone())),
             Expression::Apply(box m, box n) => {
                 let Value::Pi(t, g) = self.infer_type(m)? else {
-                    return None;
+                    return Err(TypeCheckError::NotFunction);
                 };
 
                 self.is(n, &t)?;
 
-                Some(g.instantiate(&self.environment.evaluate(n)))
+                Ok(g.instantiate(&self.environment.evaluate(n)))
             }
             Expression::First(m) => {
                 let Value::Sigma(t, _) = self.infer_type(m)? else {
-                    return None;
+                    return Err(TypeCheckError::NotTuple);
                 };
-                Some(*t)
+                Ok(*t)
             }
             Expression::Second(box m) => {
                 let Value::Sigma(_, box g) = self.infer_type(m)? else {
-                    return None;
+                    return Err(TypeCheckError::NotTuple);
                 };
-                Some(g.instantiate(&self.environment.evaluate(m).first()))
+                Ok(g.instantiate(&self.environment.evaluate(m).first()))
             }
-            _ => None,
+            _ => Err(TypeCheckError::CannotInfer),
         }
     }
 
-    fn is_type(&self, expr: &Expression) -> Option<()> {
+    fn is_type(&self, expr: &Expression) -> Result<(), TypeCheckError> {
         match expr {
-            Expression::Universe => Some(()),
-            Expression::UnitType => Some(()),
+            Expression::Universe => Ok(()),
+            Expression::UnitType => Ok(()),
             Expression::Pi(pat, box a, box b) | Expression::Sigma(pat, box a, box b) => {
                 self.is_type(a)?;
                 self.push_variable(pat.clone(), self.environment.evaluate(a), self.dummy())?
@@ -401,7 +452,7 @@ impl TypeCheck {
         }
     }
 
-    fn is(&self, expr: &Expression, ty: &Value) -> Option<()> {
+    fn is(&self, expr: &Expression, ty: &Value) -> Result<(), TypeCheckError> {
         match (expr, ty) {
             (Expression::Lambda(p, box e), Value::Pi(box t, box g)) => {
                 let gen = self.dummy();
@@ -433,7 +484,7 @@ impl TypeCheck {
                             ),
                         )?;
                     }
-                    Some(())
+                    Ok(())
                 } else {
                     panic!("case")
                 }
@@ -441,8 +492,8 @@ impl TypeCheck {
             (Expression::Declaration(box decl, box e), ty) => {
                 self.push_declaration(decl)?.is(e, ty)
             }
-            (Expression::UnitElement, Value::UnitType) => Some(()),
-            (Expression::UnitType, Value::Universe) => Some(()),
+            (Expression::UnitElement, Value::UnitType) => Ok(()),
+            (Expression::UnitType, Value::Universe) => Ok(()),
             (Expression::Pi(p, box a, box b), Value::Universe)
             | (Expression::Sigma(p, box a, box b), Value::Universe) => {
                 self.is(a, &Value::Universe)?;
@@ -453,16 +504,19 @@ impl TypeCheck {
                 for (_, a) in choices.iter() {
                     self.is(a, &Value::Universe)?;
                 }
-                Some(())
+                Ok(())
             }
             (m, ty_expected) => {
                 let ty_inferred = self.infer_type(m)?;
 
                 let l = self.environment.l();
                 if ty_expected.readback(l) == ty_inferred.readback(l) {
-                    Some(())
+                    Ok(())
                 } else {
-                    None
+                    Err(TypeCheckError::MismatchedType(
+                        m.clone(),
+                        ty_expected.clone(),
+                    ))
                 }
             }
         }
