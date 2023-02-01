@@ -475,7 +475,8 @@ impl TypeCheck {
                 Value::Pi(box Value::Sum(_, box ChoiceClosure(choices2, env2)), g),
             ) => {
                 if choices.is_same_struct(choices2) {
-                    for ((c, e), (_, a)) in choices.iter().zip(choices2.iter()) {
+                    for (c, e) in choices.iter() {
+                        let a = choices2.get(c);
                         self.check(
                             e,
                             &Value::Pi(
